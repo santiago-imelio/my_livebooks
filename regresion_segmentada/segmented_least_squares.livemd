@@ -45,12 +45,15 @@ Sea el conjunto de datos $P = \{(x_1, y_1), (x_2, y_2), ..., (x_n, y_n)\}$, con 
 Primero debemos particionar $P$ en algún número de _segmentos_. Cada segmento es un subconjunto de $P$ que representa un conjunto contiguo de coordenadas $x$; es decir, es un subconjunto de la forma $\{p_i, p_{i+1}, ..., p_{j-1}, p_j\}$ para ciertos índices $i ≤ j$. Luego, para cada segmento $S$ en nuestra partición de $P$, calculamos la función de ajuste lineal que minimiza el error con respecto a los puntos en $S$ mediante OLS.
 
 La _penalización_ de una partición $X$ esta definida como
+
 $$
 f(X) = \lambda|X| + \sum_{S_{i,j} \subset X}e_{i,j} 
 $$
+
 donde $e_{i,j}$ es el error mínimo de ajustar una recta en los puntos $S_{i,j} = \{p_i, p_{i+1} ..., p_j\}$, y $\lambda$ es un hiperparámetro de penalización tal que $\lambda > 0$.
 
 El objetivo en este problema es hallar una partición de penalización mínima.
+
 $$
 X_{opt} = \argmin_{X}f(X)
 $$
