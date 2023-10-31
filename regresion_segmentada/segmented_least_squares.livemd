@@ -9,11 +9,12 @@ Mix.install([
   {:exla, "~> 0.6.1"},
   {:explorer, "~> 0.7.1"},
   {:kino_vega_lite, "~> 0.1.10"},
-  {:tucan, "~> 0.2.1"}
+  {:tucan, "~> 0.2.1"},
+  {:candlex, "~> 0.1.2"}
 ])
 
-Nx.global_default_backend(EXLA.Backend)
-Nx.Defn.global_default_options(compiler: EXLA, client: :host)
+Nx.default_backend(Candlex.Backend)
+# Nx.Defn.global_default_options(compiler: Candlex, client: :host)
 ```
 
 ## Introducción
