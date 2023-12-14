@@ -1,0 +1,76 @@
+<!-- livebook:{"persist_outputs":true} -->
+
+# kmeans fit function bug
+
+```elixir
+Mix.install([
+  {:nx, github: "elixir-nx/nx", sparse: "nx", override: true},
+  {:exla, "~> 0.6.1"},
+  {:scholar, git: "https://github.com/elixir-nx/scholar"},
+  {:req, "~> 0.3"},
+  {:explorer, "~> 0.7.1"},
+  {:vega_lite, "~> 0.1.6"},
+  {:kino_vega_lite, "~> 0.1.7"},
+  {:kino_explorer, "~> 0.1.7"}
+])
+
+Nx.global_default_backend(EXLA.Backend)
+Nx.Defn.global_default_options(compiler: EXLA, client: :host)
+```
+
+## Section
+
+```elixir
+require Explorer.DataFrame, as: DF
+alias Explorer.Series, as: S
+
+url = "https://raw.githubusercontent.com/ageron/data/main/housing.tgz"
+
+[{~c"housing/housing.csv", csv_data}] = Req.get!(url).body
+
+housing_df = DF.load_csv!(csv_data)
+
+num_housing_df = DF.discard(housing_df, "ocean_proximity")
+
+clean_cols =
+  for name <- DF.names(num_housing_df), into: [] do
+    {name, S.fill_missing(housing_df[name], :nan)}
+  end
+
+x = DF.new(clean_cols) |> Nx.stack(axis: 1)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+
+19:12:40.690 [info] TfrtCpuClient created.
+
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+#Nx.Tensor<
+  f64[20640][9]
+  EXLA.Backend<host:0, 0.2076754068.1359872015.172336>
+  [
+    [-122.23, 37.88, 41.0, 880.0, 129.0, 322.0, 126.0, 8.3252, 4.526e5],
+    [-122.22, 37.86, 21.0, 7099.0, 1106.0, 2401.0, 1138.0, 8.3014, 3.585e5],
+    [-122.24, 37.85, 52.0, 1467.0, 190.0, 496.0, 177.0, 7.2574, 3.521e5],
+    [-122.25, 37.85, 52.0, 1274.0, 235.0, 558.0, 219.0, 5.6431, 3.413e5],
+    [-122.25, 37.85, 52.0, 1627.0, 280.0, 565.0, 259.0, 3.8462, 3.422e5],
+    [-122.25, 37.85, 52.0, 919.0, 213.0, ...],
+    ...
+  ]
+>
+```
+
+```elixir
+x =
+  housing_df
+  |> DF.select(["latitude", "longitude"])
+  |> Nx.stack(axis: 1)
+
+kmeans = Scholar.Cluster.KMeans.fit(x, num_clusters: 10)
+```
