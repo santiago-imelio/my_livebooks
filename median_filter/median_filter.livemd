@@ -127,11 +127,13 @@ defmodule FiltersDefn do
               end
               |> Nx.as_type({:u, 8})
 
+            kernel_size = elem(Nx.shape(kernel_tensor), 0)
+
             ij_median =
               Nx.slice(
                 t,
                 [y_axis_start_idx, x_axis_start_idx],
-                [elem(Nx.shape(kernel_tensor), 0), elem(Nx.shape(kernel_tensor), 0)]
+                [kernel_size, kernel_size]
               )
               |> Nx.median()
               |> Nx.broadcast({1})
@@ -141,7 +143,7 @@ defmodule FiltersDefn do
           end
 
         {i + 1, t, kernel_tensor, height, width, window_pad_size,
-         Nx.put_slice(output, [i, j], Nx.stack(ith_row, axis: 0))}
+         Nx.put_slice(output, [i, 0], Nx.stack(ith_row, axis: 0))}
       end
 
     result
@@ -150,11 +152,34 @@ end
 ```
 
 ```elixir
-params = [img, [kernel_size: 5]]
-opts = [compiler: EXLA]
-filt = Nx.Defn.jit_apply(&FiltersDefn.median_filter_2d/2, params, opts)
+# params = [img, [kernel_size: 5]]
+# opts = [compiler: EXLA]
+# filt = Nx.Defn.jit_apply(&FiltersDefn.median_filter_2d/2, params, opts)
+filt = FiltersDefn.median_filter_2d(img, kernel_size: 5)
 ```
 
 ```elixir
 Tucan.imshow(filt, height: 480, width: 640)
+```
+
+```elixir
+url2 =
+  "https://raw.githubusercontent.com/santiago-imelio/my_livebooks/median-filter-notebook/median_filter/files/man.npy"
+
+img2 =
+  Req.get!(url2).body
+  |> Nx.load_numpy!()
+  |> Nx.as_type({:f, 32})
+
+Tucan.imshow(img2, height: 256, width: 256)
+```
+
+```elixir
+params = [img2, [kernel_size: 3]]
+opts = [compiler: EXLA]
+filt2 = Nx.Defn.jit_apply(&FiltersDefn.median_filter_2d/2, params, opts)
+```
+
+```elixir
+Tucan.imshow(filt2, height: 256, width: 256)
 ```
