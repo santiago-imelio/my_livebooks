@@ -18,21 +18,74 @@ In this notebook we are going to implement the [Median Filter](https://en.wikipe
 
 ## Load the image
 
-We will load the image data from a `.npy` file. The image was processed to only contain one color channel.
-
 ```elixir
-url =
-  "https://raw.githubusercontent.com/santiago-imelio/my_livebooks/median-filter-notebook/median_filter/files/balloons.npy"
-
-img =
-  Req.get!(url).body
-  |> Nx.load_numpy!()
-  |> Nx.as_type({:u, 8})
+image_input = Kino.Input.image("Upload an image")
 ```
 
 ```elixir
-Tucan.imshow(img, height: 480, width: 640)
+%{file_ref: file_ref, height: height, width: width} = Kino.Input.read(image_input)
+
+img_tensor =
+  file_ref
+  |> Kino.Input.file_path()
+  |> File.read!()
+  |> Nx.from_binary({:u, 8})
 ```
+
+```elixir
+img_tensor = Nx.reshape(img_tensor, {height, width, 3})
+```
+
+```elixir
+Kino.Image.new(img_tensor)
+```
+
+## Utilities
+
+We will implement the median filter for 2D tensors, which means we need to convert our original image into a 2D tensor. This is, keeping only one channel of the three RGB channels. So we implement a utility function to convert an RGB image into what is commonly known as grayscale.
+
+```elixir
+defmodule Image do
+  import Nx.Defn
+
+  @rgb_weights Nx.tensor([0.2125, 0.7154, 0.0721])
+
+  @doc ~S"""
+  https://github.com/scikit-image/scikit-image/blob/v0.23.2/skimage/color/colorconv.py#L942
+  """
+  defn to_grayscale(img) do
+    Nx.dot(img, @rgb_weights)
+  end
+
+  defn(to_rgb(img), do: Nx.stack([img, img, img], axis: 2))
+
+  def plot(img) do
+    {height, width} = Nx.shape(img)
+    opts = [height: height, width: width, color_scheme: :greys, reverse: true]
+    Tucan.imshow(img, opts)
+  end
+end
+```
+
+The output is an image with the same height and width, but with the channel dimension removed.
+
+```elixir
+img = Image.to_grayscale(img_tensor)
+```
+
+```elixir
+Image.plot(img)
+```
+
+```elixir
+rgb_img = Image.to_rgb(img) |> Nx.as_type({:u, 8})
+```
+
+```elixir
+Kino.Image.new(rgb_img)
+```
+
+<!-- livebook:{"branch_parent_index":2} -->
 
 ## Implementation
 
@@ -80,19 +133,25 @@ img_filt_3 = Filters.median_filter_2d(img, kernel_size: 3)
 When we show the filtered image, we see a big improvement. There is still a lot of noise on the image, although now we can see more clearly the underlying picture.
 
 ```elixir
-Tucan.imshow(img_filt_3, height: 480, width: 640)
+Image.plot(img_filt_3)
 ```
 
 Increasing the `kernel_size` parameter will help to reduce the noise even more. However, this will inevitably start to blur the image, given that increasing the kernel size implies computing bigger windows, hence using more neighbours to compute the median.
 
 ```elixir
-img_filt_5 = Filters.median_filter_2d(img, kernel_size: 5)
-Tucan.imshow(img_filt_5, height: 480, width: 640)
+img_filt_5 = Filters.median_filter_2d(img, kernel_size: 7)
+Image.plot(img_filt_5)
 ```
 
 Even though our implementation works fine for this image, we can increase performance by refactoring our code using `Nx.Defn` module. That will allow us to run our code using a compiler such as [EXLA](https://hexdocs.pm/exla/EXLA.html).
 
+<!-- livebook:{"branch_parent_index":2} -->
+
 ## Optimization using Nx.Defn
+
+TODO:
+
+* Explanations of Nx.Defn, while loops, and backends and compilers.
 
 ```elixir
 defmodule FiltersDefn do
@@ -117,7 +176,7 @@ defmodule FiltersDefn do
               else
                 i - window_pad_size
               end
-              |> Nx.as_type({:u, 8})
+              |> Nx.as_type({:u, 32})
 
             x_axis_start_idx =
               if j - window_pad_size <= 0 do
@@ -125,7 +184,7 @@ defmodule FiltersDefn do
               else
                 j - window_pad_size
               end
-              |> Nx.as_type({:u, 8})
+              |> Nx.as_type({:u, 32})
 
             kernel_size = elem(Nx.shape(kernel_tensor), 0)
 
@@ -152,34 +211,12 @@ end
 ```
 
 ```elixir
-# params = [img, [kernel_size: 5]]
-# opts = [compiler: EXLA]
-# filt = Nx.Defn.jit_apply(&FiltersDefn.median_filter_2d/2, params, opts)
-filt = FiltersDefn.median_filter_2d(img, kernel_size: 5)
-```
-
-```elixir
-Tucan.imshow(filt, height: 480, width: 640)
-```
-
-```elixir
-url2 =
-  "https://raw.githubusercontent.com/santiago-imelio/my_livebooks/median-filter-notebook/median_filter/files/man.npy"
-
-img2 =
-  Req.get!(url2).body
-  |> Nx.load_numpy!()
-  |> Nx.as_type({:f, 32})
-
-Tucan.imshow(img2, height: 256, width: 256)
-```
-
-```elixir
-params = [img2, [kernel_size: 3]]
+params = [img, [kernel_size: 4]]
 opts = [compiler: EXLA]
-filt2 = Nx.Defn.jit_apply(&FiltersDefn.median_filter_2d/2, params, opts)
+
+filt = Nx.Defn.jit_apply(&FiltersDefn.median_filter_2d/2, params, opts)
 ```
 
 ```elixir
-Tucan.imshow(filt2, height: 256, width: 256)
+Image.plot(filt)
 ```
