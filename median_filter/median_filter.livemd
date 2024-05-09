@@ -1,0 +1,232 @@
+# Median Filter
+
+```elixir
+Mix.install([
+  {:nx, "~> 0.7.1"},
+  {:kino, "~> 0.12.3"},
+  {:vega_lite, "~> 0.1.9"},
+  {:tucan, "~> 0.3.1"},
+  {:kino_vega_lite, "~> 0.1.11"},
+  {:exla, "~> 0.7.1"}
+])
+```
+
+## Introduction
+
+In this notebook we are going to implement the [Median Filter](https://en.wikipedia.org/wiki/Median_filter). It's a digital filtering technique used to reduce noise from a signal, and we will demonstrate how it works by applying this filter images affected by [salt and pepper](https://en.wikipedia.org/wiki/Salt-and-pepper_noise) noise.
+
+```elixir
+image_input = Kino.Input.image("Upload an image with salt and pepper noise")
+```
+
+## Images as tensors
+
+Images represented as tensors contain three dimensions: height, width, and channels. The channels dimension is usually of size 3, and each channel represents the grayscale image made of a primary color. For example, an RGB image contains a red channel, a blue channel, and a green channel.
+
+```elixir
+%{file_ref: file_ref, height: height, width: width} = Kino.Input.read(image_input)
+
+img_tensor =
+  file_ref
+  |> Kino.Input.file_path()
+  |> File.read!()
+  |> Nx.from_binary({:u, 8})
+```
+
+```elixir
+img_tensor = Nx.reshape(img_tensor, {height, width, 3})
+```
+
+```elixir
+Kino.Image.new(img_tensor)
+```
+
+## Utilities
+
+We will implement the median filter for 2D tensors, which means we need to convert our original image into a 2D tensor (i.e. a matrix). So we implement a utility function to convert an RGB image into a grayscale image, meaning that we will only keep one of the three channels.
+
+```elixir
+defmodule Image do
+  @rgb_weights Nx.tensor([0.2125, 0.7154, 0.0721])
+
+  @doc ~S"""
+  https://github.com/scikit-image/scikit-image/blob/v0.23.2/skimage/color/colorconv.py#L942
+  """
+  def to_grayscale(img) do
+    Nx.dot(img, @rgb_weights)
+  end
+
+  def to_rgb(img), do: Nx.stack([img, img, img], axis: 2)
+
+  def plot(img) do
+    {height, width} = Nx.shape(img)
+    opts = [height: height, width: width, color_scheme: :greys, reverse: true]
+    Tucan.imshow(img, opts)
+  end
+end
+```
+
+The output is an image with the same height and width, but with the channels dimension removed.
+
+```elixir
+img = Image.to_grayscale(img_tensor)
+```
+
+```elixir
+Image.plot(img)
+```
+
+We also implemented a function to convert a grayscale image to RGB by stacking the image three times in the channels axis.
+
+```elixir
+rgb_img = Image.to_rgb(img) |> Nx.as_type({:u, 8})
+```
+
+```elixir
+Kino.Image.new(rgb_img)
+```
+
+<!-- livebook:{"branch_parent_index":2} -->
+
+## Implementation
+
+The following is an implementation of 2-dimensional median filter. The boundary strategy in this case is given by how `Nx.slice/3` handles the edges when we compute a window.
+
+```elixir
+defmodule Filters do
+  def median_filter(t, opts \\ [kernel_size: 3]) do
+    kernel_size = Keyword.get(opts, :kernel_size)
+
+    {height, width} = Nx.shape(t)
+    window_pad_size = round((kernel_size - 1) / 2)
+
+    for i <- 0..(height - 1) do
+      for j <- 0..(width - 1) do
+        y_axis_start_idx =
+          if i - window_pad_size <= 0 do
+            0
+          else
+            round(i - window_pad_size)
+          end
+          |> Nx.as_type({:u, 32})
+
+        x_axis_start_idx =
+          if j - window_pad_size <= 0 do
+            0
+          else
+            round(j - window_pad_size)
+          end
+          |> Nx.as_type({:u, 32})
+
+        Nx.slice(t, [y_axis_start_idx, x_axis_start_idx], [kernel_size, kernel_size])
+        |> Nx.median()
+        |> Nx.to_number()
+      end
+    end
+    |> Nx.tensor()
+    |> Nx.as_type({:f, 32})
+  end
+end
+```
+
+```elixir
+img_filt_3 = Filters.median_filter(img, kernel_size: 3)
+```
+
+When we show the filtered image, we see a big improvement. There is still a lot of noise on the image, although now we can see more clearly the underlying picture.
+
+```elixir
+Image.plot(img_filt_3)
+```
+
+Increasing the `kernel_size` parameter will help to reduce the noise even more. However, this will inevitably start to blur the image, given that increasing the kernel size implies computing bigger windows, hence using more neighbours to compute the median.
+
+```elixir
+img_filt_5 = Filters.median_filter(img, kernel_size: 5)
+Image.plot(img_filt_5)
+```
+
+```elixir
+Image.to_rgb(img_filt_5) |> Nx.as_type({:u, 8}) |> Kino.Image.new()
+```
+
+Even though our implementation works fine for this image, we can increase performance by refactoring our code using `Nx.Defn` module. That will allow us to run our code using a compiler such as [EXLA](https://hexdocs.pm/exla/EXLA.html).
+
+<!-- livebook:{"branch_parent_index":2} -->
+
+## Optimization using Nx.Defn
+
+```elixir
+defmodule FiltersDefn do
+  import Nx.Defn
+
+  defn median_filter(t, opts \\ [kernel_size: 3]) do
+    {height, width} = Nx.shape(t)
+
+    # rank 1 tensor (vector) of length kernel_size
+    kernel_tensor = Nx.broadcast(0.0, {opts[:kernel_size]})
+
+    # filler tensor
+    output = Nx.broadcast(0.0, Nx.shape(t))
+
+    {_, _, _, _, _, result} =
+      while {i = 0, t, kernel_tensor, height, width, output}, i < height do
+        # filler ith row
+        row = Nx.broadcast(0.0, {elem(Nx.shape(t), 1)})
+
+        {_, _, _, _, _, ith_row} =
+          while {j = 0, t, i, kernel_tensor, width, row}, j < width do
+            ij_median =
+              ij_window_median(t, i, j, kernel_tensor)
+              |> Nx.broadcast({1})
+
+            {j + 1, t, i, kernel_tensor, width, Nx.put_slice(row, [j], ij_median)}
+          end
+
+        {i + 1, t, kernel_tensor, height, width,
+         Nx.put_slice(output, [i, 0], Nx.stack(ith_row, axis: 0))}
+      end
+
+    result
+  end
+
+  defnp ij_window_median(t, i, j, kernel_tensor) do
+    {kernel_size} = Nx.shape(kernel_tensor)
+    window_pad_size = Nx.round((kernel_size - 1) / 2)
+
+    y_axis_start_idx =
+      if i - window_pad_size <= 0 do
+        0
+      else
+        i - window_pad_size
+      end
+      |> Nx.as_type({:u, 32})
+
+    x_axis_start_idx =
+      if j - window_pad_size <= 0 do
+        0
+      else
+        j - window_pad_size
+      end
+      |> Nx.as_type({:u, 32})
+
+    Nx.slice(
+      t,
+      [y_axis_start_idx, x_axis_start_idx],
+      [kernel_size, kernel_size]
+    )
+    |> Nx.median()
+  end
+end
+```
+
+```elixir
+params = [img, [kernel_size: 5]]
+opts = [compiler: EXLA]
+
+filt = Nx.Defn.jit_apply(&FiltersDefn.median_filter/2, params, opts)
+```
+
+```elixir
+Image.plot(filt)
+```
