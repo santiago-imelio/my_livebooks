@@ -170,7 +170,7 @@ defmodule FiltersDefn do
          {i + 1, t, kernel_tensor, height, width}}
       end
 
-    Nx.squeeze(result)
+    result
   end
 end
 ```
