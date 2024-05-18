@@ -96,29 +96,11 @@ The following is an implementation of 2-dimensional median filter. The boundary 
 defmodule Filters do
   def median_filter(t, opts \\ [kernel_size: 3]) do
     kernel_size = Keyword.get(opts, :kernel_size)
-
     {height, width} = Nx.shape(t)
-    window_pad_size = round((kernel_size - 1) / 2)
 
     for i <- 0..(height - 1) do
       for j <- 0..(width - 1) do
-        y_axis_start_idx =
-          if i - window_pad_size <= 0 do
-            0
-          else
-            round(i - window_pad_size)
-          end
-          |> Nx.as_type({:u, 32})
-
-        x_axis_start_idx =
-          if j - window_pad_size <= 0 do
-            0
-          else
-            round(j - window_pad_size)
-          end
-          |> Nx.as_type({:u, 32})
-
-        Nx.slice(t, [y_axis_start_idx, x_axis_start_idx], [kernel_size, kernel_size])
+        Nx.slice(t, [i, j], [kernel_size, kernel_size])
         |> Nx.median()
         |> Nx.to_number()
       end
@@ -154,79 +136,92 @@ Even though our implementation works fine for this image, we can increase perfor
 
 <!-- livebook:{"branch_parent_index":2} -->
 
-## Optimization using Nx.Defn
+## Optimization using while construct
 
 ```elixir
 defmodule FiltersDefn do
   import Nx.Defn
 
-  defn median_filter(t, opts \\ [kernel_size: 3]) do
+  defn median(t, opts) do
+    kernel_shape = opts[:kernel_shape]
+
     {height, width} = Nx.shape(t)
 
-    # rank 1 tensor (vector) of length kernel_size
-    kernel_tensor = Nx.broadcast(0.0, {opts[:kernel_size]})
-
-    # filler tensor
+    kernel_tensor = Nx.broadcast(0.0, kernel_shape)
     output = Nx.broadcast(0.0, Nx.shape(t))
 
-    {_, _, _, _, _, result} =
-      while {i = 0, t, kernel_tensor, height, width, output}, i < height do
-        # filler ith row
+    {result, _} =
+      while {output, {i = 0, t, kernel_tensor, height, width}}, i < height do
         row = Nx.broadcast(0.0, {elem(Nx.shape(t), 1)})
 
-        {_, _, _, _, _, ith_row} =
-          while {j = 0, t, i, kernel_tensor, width, row}, j < width do
-            ij_median =
-              ij_window_median(t, i, j, kernel_tensor)
+        {ith_row, _} =
+          while {row, {j = 0, t, i, kernel_tensor, width}}, j < width do
+            {k0, k1} = kernel_tensor.shape
+
+            median =
+              Nx.slice(t, [i, j], [k0, k1])
+              |> Nx.median()
               |> Nx.broadcast({1})
 
-            {j + 1, t, i, kernel_tensor, width, Nx.put_slice(row, [j], ij_median)}
+            {Nx.put_slice(row, [j], median), {j + 1, t, i, kernel_tensor, width}}
           end
 
-        {i + 1, t, kernel_tensor, height, width,
-         Nx.put_slice(output, [i, 0], Nx.stack(ith_row, axis: 0))}
+        {Nx.put_slice(output, [i, 0], Nx.stack(ith_row, axis: 0)),
+         {i + 1, t, kernel_tensor, height, width}}
       end
 
-    result
-  end
-
-  defnp ij_window_median(t, i, j, kernel_tensor) do
-    {kernel_size} = Nx.shape(kernel_tensor)
-    window_pad_size = Nx.round((kernel_size - 1) / 2)
-
-    y_axis_start_idx =
-      if i - window_pad_size <= 0 do
-        0
-      else
-        i - window_pad_size
-      end
-      |> Nx.as_type({:u, 32})
-
-    x_axis_start_idx =
-      if j - window_pad_size <= 0 do
-        0
-      else
-        j - window_pad_size
-      end
-      |> Nx.as_type({:u, 32})
-
-    Nx.slice(
-      t,
-      [y_axis_start_idx, x_axis_start_idx],
-      [kernel_size, kernel_size]
-    )
-    |> Nx.median()
+    Nx.squeeze(result)
   end
 end
 ```
 
 ```elixir
-params = [img, [kernel_size: 5]]
+params = [img, [kernel_shape: {3, 3}]]
 opts = [compiler: EXLA]
 
-filt = Nx.Defn.jit_apply(&FiltersDefn.median_filter/2, params, opts)
+filt = Nx.Defn.jit_apply(&FiltersDefn.median/2, params, opts)
 ```
 
 ```elixir
 Image.plot(filt)
 ```
+
+<!-- livebook:{"branch_parent_index":2} -->
+
+## Refactor using vectorization
+
+```elixir
+defmodule FiltersVec do
+  import Nx.Defn
+
+  defn median(t, opts) do
+    {k0, k1} = opts[:kernel_shape]
+
+    idx =
+      [Nx.iota(t.shape, axis: 0), Nx.iota(t.shape, axis: 1)]
+      |> Nx.stack(axis: -1)
+      |> Nx.reshape({:auto, 2})
+      |> Nx.vectorize(:elements)
+
+    t
+    |> Nx.slice([idx[0], idx[1]], [k0, k1])
+    |> Nx.median()
+    |> Nx.devectorize(keep_names: false)
+    |> Nx.reshape(t.shape)
+    |> Nx.as_type({:f, 32})
+  end
+end
+```
+
+```elixir
+params = [img, [kernel_shape: {4, 4}]]
+opts = [compiler: EXLA]
+
+filt = Nx.Defn.jit_apply(&FiltersVec.median/2, params, opts)
+```
+
+```elixir
+Image.plot(filt)
+```
+
+TODO: compare performance using Benchee
