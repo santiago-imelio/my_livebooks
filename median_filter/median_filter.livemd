@@ -7,7 +7,8 @@ Mix.install([
   {:vega_lite, "~> 0.1.9"},
   {:tucan, "~> 0.3.1"},
   {:kino_vega_lite, "~> 0.1.11"},
-  {:exla, "~> 0.7.1"}
+  {:exla, "~> 0.7.1"},
+  {:benchee, "~> 1.3"}
 ])
 ```
 
@@ -56,8 +57,6 @@ defmodule Image do
     Nx.dot(img, @rgb_weights)
   end
 
-  def to_rgb(img), do: Nx.stack([img, img, img], axis: 2)
-
   def plot(img) do
     {height, width} = Nx.shape(img)
     opts = [height: height, width: width, color_scheme: :greys, reverse: true]
@@ -76,25 +75,13 @@ img = Image.to_grayscale(img_tensor)
 Image.plot(img)
 ```
 
-We also implemented a function to convert a grayscale image to RGB by stacking the image three times in the channels axis.
-
-```elixir
-rgb_img = Image.to_rgb(img) |> Nx.as_type({:u, 8})
-```
-
-```elixir
-Kino.Image.new(rgb_img)
-```
-
-<!-- livebook:{"branch_parent_index":2} -->
-
 ## Implementation
 
 The following is an implementation of 2-dimensional median filter. The boundary strategy in this case is given by how `Nx.slice/3` handles the edges when we compute a window.
 
 ```elixir
 defmodule Filters do
-  def median_filter(t, opts \\ [kernel_size: 3]) do
+  def median(t, opts \\ [kernel_size: 3]) do
     kernel_size = Keyword.get(opts, :kernel_size)
     {height, width} = Nx.shape(t)
 
@@ -112,7 +99,7 @@ end
 ```
 
 ```elixir
-img_filt_3 = Filters.median_filter(img, kernel_size: 3)
+img_filt_3 = Filters.median(img, kernel_size: 3)
 ```
 
 When we show the filtered image, we see a big improvement. There is still a lot of noise on the image, although now we can see more clearly the underlying picture.
@@ -124,17 +111,11 @@ Image.plot(img_filt_3)
 Increasing the `kernel_size` parameter will help to reduce the noise even more. However, this will inevitably start to blur the image, given that increasing the kernel size implies computing bigger windows, hence using more neighbours to compute the median.
 
 ```elixir
-img_filt_5 = Filters.median_filter(img, kernel_size: 5)
+img_filt_5 = Filters.median(img, kernel_size: 5)
 Image.plot(img_filt_5)
 ```
 
-```elixir
-Image.to_rgb(img_filt_5) |> Nx.as_type({:u, 8}) |> Kino.Image.new()
-```
-
 Even though our implementation works fine for this image, we can increase performance by refactoring our code using `Nx.Defn` module. That will allow us to run our code using a compiler such as [EXLA](https://hexdocs.pm/exla/EXLA.html).
-
-<!-- livebook:{"branch_parent_index":2} -->
 
 ## Optimization using while construct
 
@@ -186,8 +167,6 @@ filt = Nx.Defn.jit_apply(&FiltersDefn.median/2, params, opts)
 Image.plot(filt)
 ```
 
-<!-- livebook:{"branch_parent_index":2} -->
-
 ## Refactor using vectorization
 
 ```elixir
@@ -214,7 +193,7 @@ end
 ```
 
 ```elixir
-params = [img, [kernel_shape: {4, 4}]]
+params = [img, [kernel_shape: {3, 3}]]
 opts = [compiler: EXLA]
 
 filt = Nx.Defn.jit_apply(&FiltersVec.median/2, params, opts)
@@ -224,4 +203,52 @@ filt = Nx.Defn.jit_apply(&FiltersVec.median/2, params, opts)
 Image.plot(filt)
 ```
 
-TODO: compare performance using Benchee
+## Performance Comparisson
+
+```elixir
+opts = [kernel_shape: {3, 3}]
+
+Benchee.run(%{
+  "median no defn" => fn -> Filters.median(img, kernel_size: 3) end,
+  "median defn-while" => fn -> EXLA.jit_apply(&FiltersDefn.median/2, [img, opts]) end,
+  "median vectorized" => fn -> EXLA.jit_apply(&FiltersVec.median/2, [img, opts]) end
+})
+```
+
+## Bonus: extending to 3-dim
+
+```elixir
+defmodule FiltersVec2 do
+  import Nx.Defn
+
+  defn median(t, opts) do
+    {k0, k1, k2} = opts[:kernel_shape]
+
+    idx =
+      [Nx.iota(t.shape, axis: 0), Nx.iota(t.shape, axis: 1), Nx.iota(t.shape, axis: 2)]
+      |> Nx.stack(axis: -1)
+      |> Nx.reshape({:auto, 3})
+      |> Nx.vectorize(:elements)
+
+    t
+    |> Nx.slice([idx[0], idx[1], idx[2]], [k0, k1, k2])
+    |> Nx.median()
+    |> Nx.devectorize(keep_names: false)
+    |> Nx.reshape(t.shape)
+    |> Nx.as_type({:f, 32})
+  end
+end
+```
+
+```elixir
+params = [img_tensor, [kernel_shape: {5, 5, 1}]]
+opts = [compiler: EXLA]
+
+filt =
+  Nx.Defn.jit_apply(&FiltersVec2.median/2, params, opts)
+  |> Nx.as_type({:u, 8})
+```
+
+```elixir
+Kino.Image.new(filt)
+```
