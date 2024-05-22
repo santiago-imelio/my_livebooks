@@ -215,28 +215,70 @@ Benchee.run(%{
 })
 ```
 
-## Bonus: extending to 3-dim
+<!-- livebook:{"branch_parent_index":0} -->
+
+## Bonus - extending to n-dim
+
+```elixir
+image_input = Kino.Input.image("Upload an image with salt and pepper noise")
+```
+
+```elixir
+%{file_ref: file_ref, height: height, width: width} = Kino.Input.read(image_input)
+
+img_tensor =
+  file_ref
+  |> Kino.Input.file_path()
+  |> File.read!()
+  |> Nx.from_binary({:u, 8})
+  |> Nx.reshape({height, width, 3})
+
+Kino.Image.new(img_tensor)
+```
 
 ```elixir
 defmodule FiltersVec2 do
   import Nx.Defn
 
   defn median(t, opts) do
-    {k0, k1, k2} = opts[:kernel_shape]
+    validate_median_opts!(t, opts)
 
     idx =
-      [Nx.iota(t.shape, axis: 0), Nx.iota(t.shape, axis: 1), Nx.iota(t.shape, axis: 2)]
-      |> Nx.stack(axis: -1)
-      |> Nx.reshape({:auto, 3})
+      t
+      |> idx_tensor()
       |> Nx.vectorize(:elements)
 
     t
-    |> Nx.slice([idx[0], idx[1], idx[2]], [k0, k1, k2])
+    |> Nx.slice(start_indices(t, idx), kernel_lengths(opts[:kernel_shape]))
     |> Nx.median()
     |> Nx.devectorize(keep_names: false)
     |> Nx.reshape(t.shape)
     |> Nx.as_type({:f, 32})
   end
+
+  deftransformp validate_median_opts!(t, opts) do
+    Keyword.validate!(opts, [:kernel_shape])
+
+    if Nx.rank(t) != Nx.rank(opts[:kernel_shape]) do
+      raise ArgumentError, message: "kernel shape must be of the same rank as the tensor"
+    end
+  end
+
+  deftransformp idx_tensor(t) do
+    t
+    |> Nx.axes()
+    |> Enum.map(&Nx.iota(t.shape, axis: &1))
+    |> Nx.stack(axis: -1)
+    |> Nx.reshape({:auto, length(Nx.axes(t))})
+  end
+
+  deftransformp start_indices(t, idx_tensor) do
+    t
+    |> Nx.axes()
+    |> Enum.map(&idx_tensor[&1])
+  end
+
+  deftransformp(kernel_lengths(kernel_shape), do: Tuple.to_list(kernel_shape))
 end
 ```
 
