@@ -1,0 +1,207 @@
+<!-- livebook:{"file_entries":[{"name":"Apple_Stock_Prices_1981_to_2023.csv","type":"attachment"},{"name":"normalized_apple_prices.csv","type":"attachment"}]} -->
+
+# Time Series Forecasting with Axon
+
+```elixir
+Mix.install([
+  {:axon, "~> 0.6.1"},
+  {:kino_vega_lite, "~> 0.1.13"},
+  {:explorer, "~> 0.8.3"},
+  {:kino_explorer, "~> 0.1.20"},
+  {:nx, "~> 0.7.3"},
+  {:tucan, "~> 0.3.1"},
+  {:polaris, "~> 0.1.0"},
+  {:exla, "~> 0.7.3"}
+])
+
+Nx.global_default_backend(EXLA.Backend)
+Nx.Defn.global_default_options(compiler: EXLA)
+
+dataset_path =
+  "/Users/santiago/Dev/my_livebooks/apple_stock_prices/files/normalized_apple_prices.csv"
+```
+
+## Section
+
+```elixir
+alias Explorer.DataFrame, as: DF
+```
+
+```elixir
+data =
+  dataset_path
+  |> DF.from_csv!()
+  |> Nx.stack(axis: 1)
+  |> Nx.squeeze()
+  |> Nx.as_type(:f32)
+```
+
+```elixir
+plt_domain = Nx.linspace(0, 137, n: 137, type: {:u, 8})
+
+plt_data = [
+  prices: data,
+  t: plt_domain
+]
+
+plt1 = Tucan.lineplot(plt_data, "t", "prices", height: 400, width: 600, line_color: "black")
+```
+
+```elixir
+sliding_window = fn series, win_size ->
+  {p} = Nx.shape(series)
+
+  x_idx =
+    series
+    |> Nx.shape()
+    |> Nx.iota()
+    |> Nx.reshape({:auto, 1})
+    |> Nx.vectorize(:elements)
+
+  y_idx =
+    series
+    |> Nx.shape()
+    |> Nx.iota()
+    |> Nx.add(win_size)
+    |> Nx.reshape({:auto, 1})
+    |> Nx.slice([0, 0], [p - win_size, 1])
+
+  x =
+    Nx.slice(series, [x_idx[0]], [win_size])
+    |> Nx.devectorize(keep_names: false)
+    |> Nx.slice([0, 0], [p - win_size, win_size])
+
+  y = Nx.gather(series, y_idx, axes: [0])
+
+  {x, y}
+end
+```
+
+```elixir
+test_series = Nx.tensor([0, 1, 1, 2, 3, 5, 8, 13, 21, 34])
+```
+
+```elixir
+sliding_window.(test_series, 2)
+```
+
+```elixir
+p = 133
+win_size = 7
+trunc_data = data[0..(p - 1)]
+
+{x, y} = sliding_window.(trunc_data, win_size)
+```
+
+```elixir
+train_test_split = 2 / 3
+
+{x_train, x_test} = Nx.split(x, train_test_split)
+{y_train, y_test} = Nx.split(y, train_test_split)
+
+# reshape for LSTM layer input
+batch_size = 8
+```
+
+```elixir
+input_layer = Axon.input("input", shape: {batch_size, 7, 1})
+```
+
+```elixir
+model =
+  input_layer
+  |> Axon.lstm(5)
+  |> then(fn {out, _} -> out end)
+  |> Axon.dense(1, activation: :linear)
+```
+
+```elixir
+optimizer = Polaris.Optimizers.sgd(learning_rate: 0.08)
+
+loop = Axon.Loop.trainer(model, :mean_squared_error, optimizer)
+
+y_train_batches = Nx.to_batched(y_train, batch_size)
+
+x_train_batches =
+  x_train
+  |> Nx.reshape({:auto, win_size, 1})
+  |> Nx.to_batched(batch_size)
+
+y_test_batches = Nx.to_batched(y_test, batch_size)
+
+x_test_batches =
+  x_test
+  |> Nx.reshape({:auto, win_size, 1})
+  |> Nx.to_batched(batch_size)
+
+train_data = Stream.zip([x_train_batches, y_train_batches])
+trained_model_state = Axon.Loop.run(loop, train_data, %{}, epochs: 20)
+```
+
+```elixir
+y_pred_train =
+  x_train_batches
+  |> Enum.map(&Axon.predict(model, trained_model_state, &1))
+  # this is incorrect, we should correct predictions
+  |> Enum.map(&Nx.mean(&1, axes: [1]))
+  |> Nx.concatenate()
+
+y_pred_test =
+  x_test_batches
+  |> Enum.map(&Axon.predict(model, trained_model_state, &1))
+  # this is incorrect, we should correct predictions
+  |> Enum.map(&Nx.mean(&1, axes: [1]))
+  |> Nx.concatenate()
+```
+
+```elixir
+plt_data = plt_data ++ [eval: List.duplicate("real prices", 138)]
+
+data_eval_train = [
+  prices: Nx.to_flat_list(y_pred_train),
+  t: Nx.linspace(0, 87, n: 84, type: {:u, 8}),
+  eval: List.duplicate("predictions train", 88)
+]
+
+data_eval_test = [
+  prices: Nx.to_flat_list(y_pred_test),
+  t: Nx.linspace(88, 137, n: 42, type: {:u, 8}),
+  eval: List.duplicate("predictions test", 88)
+]
+
+data_opts = [height: 400, width: 600, stroke_dash: [2], stroke_width: 2]
+train_opts = [height: 400, width: 600, stroke_width: 2]
+test_opts = [height: 400, width: 600, stroke_width: 2]
+
+Tucan.layers([
+  Tucan.lineplot(plt_data, "t", "prices", data_opts),
+  Tucan.lineplot(data_eval_train, "t", "prices", train_opts),
+  Tucan.lineplot(data_eval_test, "t", "prices", test_opts)
+])
+|> Tucan.color_by("eval")
+|> Tucan.set_theme(:urban_institute)
+```
+
+```elixir
+mse = fn y_pred, y_true ->
+  Axon.Losses.mean_squared_error(y_pred, y_true, reduction: :mean)
+end
+
+train_loop =
+  model
+  |> Axon.Loop.evaluator()
+  |> Axon.Loop.metric(mse, "mse")
+
+Axon.Loop.run(train_loop, train_data, trained_model_state, epochs: 10)
+```
+
+```elixir
+test_data = Stream.zip([x_test_batches, y_test_batches])
+
+test_loop =
+  model
+  |> Axon.Loop.evaluator()
+  |> Axon.Loop.metric(mse, "mse")
+
+Axon.Loop.run(test_loop, test_data, trained_model_state, epochs: 10)
+```
