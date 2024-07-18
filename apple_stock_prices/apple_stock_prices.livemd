@@ -78,16 +78,12 @@ where $s_p$ is the numerical value of the series at time interval $p$, and $P$ i
 For example, with a window size $T = 3$, the following pairs need to be produced:
 
 $$
-  \begin{array}{c|c}
-
-```
-\text{Input} & \text{Output}\\
-\hline \langle s_{1},s_{2},s_{3}\rangle & s_{4} \\
-\langle s_{2},s_{3},s_{4} \rangle & s_{5}  \\
-\vdots & \vdots \\
-\langle s_{P-3},s_{P-2},s_{P-1} \rangle & s_{P}
-```
-
+\begin{array}{c|c}
+  \text{Input} & \text{Output}\\
+  \hline \langle s_{1},s_{2},s_{3}\rangle & s_{4} \\
+  \langle s_{2},s_{3},s_{4} \rangle & s_{5}  \\
+  \vdots & \vdots \\
+  \langle s_{P-3},s_{P-2},s_{P-1} \rangle & s_{P}
 \end{array}
 $$
 
