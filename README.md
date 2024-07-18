@@ -1,5 +1,5 @@
 # My Interactive Notebooks
-This is a repository is a collection of interactive notebooks made in Elixir and Python, each one explores a specific computer science topic that I was learning at the time of writing it.
+This repository is a collection of interactive notebooks made in Elixir and Python, each one explores a specific computer science topic that I was learning at the time of writing it.
 
 ## Related contributions
 - [Cross-validation with gradient boosting trees](https://github.com/elixir-nx/scholar/blob/main/notebooks/cv_gradient_boosting_tree.livemd) - This guide explores how to use cross-validation in [Scholar](https://github.com/elixir-nx/scholar).
