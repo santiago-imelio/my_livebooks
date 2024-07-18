@@ -110,13 +110,17 @@ input_layer = Axon.input("input", shape: {batch_size, 7, 1})
 ```elixir
 model =
   input_layer
-  |> Axon.lstm(5)
+  |> Axon.lstm(5, name: "LSTM")
   |> then(fn {out, _} -> out end)
-  |> Axon.dense(1, activation: :linear)
+  # takes the last element of the sequence
+  |> Axon.nx(fn t -> t[[0..-1//1, -1]] end)
+  |> Axon.dense(1)
+
+Axon.Display.as_graph(model, Nx.template({batch_size, 7, 1}, :f32))
 ```
 
 ```elixir
-optimizer = Polaris.Optimizers.sgd(learning_rate: 0.08)
+optimizer = Polaris.Optimizers.sgd(learning_rate: 0.05)
 
 loop = Axon.Loop.trainer(model, :mean_squared_error, optimizer)
 
@@ -135,22 +139,18 @@ x_test_batches =
   |> Nx.to_batched(batch_size)
 
 train_data = Stream.zip([x_train_batches, y_train_batches])
-trained_model_state = Axon.Loop.run(loop, train_data, %{}, epochs: 20)
+trained_model_state = Axon.Loop.run(loop, train_data, %{}, epochs: 1000)
 ```
 
 ```elixir
 y_pred_train =
   x_train_batches
   |> Enum.map(&Axon.predict(model, trained_model_state, &1))
-  # this is incorrect, we should correct predictions
-  |> Enum.map(&Nx.mean(&1, axes: [1]))
   |> Nx.concatenate()
 
 y_pred_test =
   x_test_batches
   |> Enum.map(&Axon.predict(model, trained_model_state, &1))
-  # this is incorrect, we should correct predictions
-  |> Enum.map(&Nx.mean(&1, axes: [1]))
   |> Nx.concatenate()
 ```
 
@@ -166,7 +166,7 @@ data_eval_train = [
 data_eval_test = [
   prices: Nx.to_flat_list(y_pred_test),
   t: Nx.linspace(88, 137, n: 42, type: {:u, 8}),
-  eval: List.duplicate("predictions test", 88)
+  eval: List.duplicate("predictions test", 48)
 ]
 
 data_opts = [height: 400, width: 600, stroke_dash: [2], stroke_width: 2]
@@ -192,7 +192,7 @@ train_loop =
   |> Axon.Loop.evaluator()
   |> Axon.Loop.metric(mse, "mse")
 
-Axon.Loop.run(train_loop, train_data, trained_model_state, epochs: 10)
+Axon.Loop.run(train_loop, train_data, trained_model_state, epochs: 100)
 ```
 
 ```elixir
@@ -203,5 +203,5 @@ test_loop =
   |> Axon.Loop.evaluator()
   |> Axon.Loop.metric(mse, "mse")
 
-Axon.Loop.run(test_loop, test_data, trained_model_state, epochs: 10)
+Axon.Loop.run(test_loop, test_data, trained_model_state, epochs: 100)
 ```
