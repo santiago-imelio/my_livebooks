@@ -281,4 +281,4 @@ Tucan.layers([
 
 ![](files/train_test_plt.png)
 |:-:|
-|Predictions over train set and test sets compared to real prices (epochs = 5000).|
+|Predictions over train set and test sets compared to real prices (epochs = 500).|
