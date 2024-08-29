@@ -8,7 +8,8 @@ Mix.install([
   {:tucan, "~> 0.3.1"},
   {:kino_vega_lite, "~> 0.1.11"},
   {:exla, "~> 0.7.1"},
-  {:benchee, "~> 1.3"}
+  {:benchee, "~> 1.3"},
+  {:nx_signal, git: "https://github.com/elixir-nx/nx_signal", branch: "main"}
 ])
 ```
 
@@ -55,9 +56,10 @@ defmodule Image do
   """
   def to_grayscale(img) do
     Nx.dot(img, @rgb_weights)
+    |> Nx.as_type({:u, 8})
   end
 
-  def plot(img) do
+  def show(img) do
     {height, width} = Nx.shape(img)
     opts = [height: height, width: width, color_scheme: :greys, reverse: true]
     Tucan.imshow(img, opts)
@@ -72,12 +74,12 @@ img = Image.to_grayscale(img_tensor)
 ```
 
 ```elixir
-Image.plot(img)
+Image.show(img)
 ```
 
 ## Implementation
 
-The following is an implementation of 2-dimensional median filter. The boundary strategy in this case is given by how `Nx.slice/3` handles the edges when we compute a window.
+The following is an implementation of 2-dimensional median filter. The boundary strategy in this case is given by how `Nx.slice/3` handles the edges when we compute a window. Remember that when `start_index + length <= dimension`, the `start_index` will be clipped to guarantee that the slice is of the requested `length`.
 
 ```elixir
 defmodule Filters do
@@ -93,7 +95,7 @@ defmodule Filters do
       end
     end
     |> Nx.tensor()
-    |> Nx.as_type({:f, 32})
+    |> Nx.as_type({:u, 8})
   end
 end
 ```
@@ -105,14 +107,14 @@ img_filt_3 = Filters.median(img, kernel_size: 3)
 When we show the filtered image, we see a big improvement. There is still a lot of noise on the image, although now we can see more clearly the underlying picture.
 
 ```elixir
-Image.plot(img_filt_3)
+Image.show(img_filt_3)
 ```
 
 Increasing the `kernel_size` parameter will help to reduce the noise even more. However, this will inevitably start to blur the image, given that increasing the kernel size implies computing bigger windows, hence using more neighbours to compute the median.
 
 ```elixir
 img_filt_5 = Filters.median(img, kernel_size: 5)
-Image.plot(img_filt_5)
+Image.show(img_filt_5)
 ```
 
 Even though our implementation works fine for this image, we can increase performance by refactoring our code using `Nx.Defn` module. That will allow us to run our code using a compiler such as [EXLA](https://hexdocs.pm/exla/EXLA.html).
@@ -151,7 +153,7 @@ defmodule FiltersDefn do
          {i + 1, t, kernel_tensor, height, width}}
       end
 
-    result
+    result |> Nx.as_type({:u, 8})
   end
 end
 ```
@@ -164,7 +166,7 @@ filt = Nx.Defn.jit_apply(&FiltersDefn.median/2, params, opts)
 ```
 
 ```elixir
-Image.plot(filt)
+Image.show(filt)
 ```
 
 ## Refactor using vectorization
@@ -187,7 +189,7 @@ defmodule FiltersVec do
     |> Nx.median()
     |> Nx.devectorize(keep_names: false)
     |> Nx.reshape(t.shape)
-    |> Nx.as_type({:f, 32})
+    |> Nx.as_type({:u, 8})
   end
 end
 ```
@@ -200,24 +202,27 @@ filt = Nx.Defn.jit_apply(&FiltersVec.median/2, params, opts)
 ```
 
 ```elixir
-Image.plot(filt)
+Image.show(filt)
 ```
 
-## Performance Comparisson
+## Performance comparisson
+
+As we will see from the benchmarks, the vectorized version is by far the faster one.
 
 ```elixir
 opts = [kernel_shape: {3, 3}]
 
-Benchee.run(%{
-  "median no defn" => fn -> Filters.median(img, kernel_size: 3) end,
-  "median defn-while" => fn -> EXLA.jit_apply(&FiltersDefn.median/2, [img, opts]) end,
-  "median vectorized" => fn -> EXLA.jit_apply(&FiltersVec.median/2, [img, opts]) end
-})
+benchmarks =
+  Benchee.run(%{
+    "median no defn" => fn -> Filters.median(img, kernel_size: 3) end,
+    "median defn-while" => fn -> EXLA.jit_apply(&FiltersDefn.median/2, [img, opts]) end,
+    "median vectorized" => fn -> EXLA.jit_apply(&FiltersVec.median/2, [img, opts]) end
+  })
 ```
 
-<!-- livebook:{"branch_parent_index":0} -->
+<!-- livebook:{"branch_parent_index":2} -->
 
-## Bonus - extending to n-dim
+## Extending to n-dim
 
 ```elixir
 image_input = Kino.Input.image("Upload an image with salt and pepper noise")
@@ -233,64 +238,31 @@ img_tensor =
   |> Nx.from_binary({:u, 8})
   |> Nx.reshape({height, width, 3})
 
+img_tensor_gray = Image.to_grayscale(img_tensor)
+
 Kino.Image.new(img_tensor)
 ```
 
+`NxSignal` is a library that provides digital signal processing utilities. It's built on top of `Nx`, meaning we can use compilers and backends for faster computations.
+
+A consequence of the work done in this notebook was the [addition of the median filter into NxSignal](https://github.com/elixir-nx/nx_signal/pull/21), with support for n-dimensional tensors.
+
 ```elixir
-defmodule FiltersVec2 do
-  import Nx.Defn
+params = [img_tensor_gray, [kernel_shape: {3, 3}]]
+opts = [compiler: EXLA]
 
-  defn median(t, opts) do
-    validate_median_opts!(t, opts)
-
-    idx =
-      t
-      |> idx_tensor()
-      |> Nx.vectorize(:elements)
-
-    t
-    |> Nx.slice(start_indices(t, idx), kernel_lengths(opts[:kernel_shape]))
-    |> Nx.median()
-    |> Nx.devectorize(keep_names: false)
-    |> Nx.reshape(t.shape)
-    |> Nx.as_type({:f, 32})
-  end
-
-  deftransformp validate_median_opts!(t, opts) do
-    Keyword.validate!(opts, [:kernel_shape])
-
-    if Nx.rank(t) != Nx.rank(opts[:kernel_shape]) do
-      raise ArgumentError, message: "kernel shape must be of the same rank as the tensor"
-    end
-  end
-
-  deftransformp idx_tensor(t) do
-    t
-    |> Nx.axes()
-    |> Enum.map(&Nx.iota(t.shape, axis: &1))
-    |> Nx.stack(axis: -1)
-    |> Nx.reshape({:auto, length(Nx.axes(t))})
-  end
-
-  deftransformp start_indices(t, idx_tensor) do
-    t
-    |> Nx.axes()
-    |> Enum.map(&idx_tensor[&1])
-  end
-
-  deftransformp(kernel_lengths(kernel_shape), do: Tuple.to_list(kernel_shape))
-end
+(&NxSignal.Filters.median/2)
+|> Nx.Defn.jit_apply(params, opts)
+|> Nx.as_type(:u8)
+|> Image.show()
 ```
 
 ```elixir
 params = [img_tensor, [kernel_shape: {5, 5, 1}]]
 opts = [compiler: EXLA]
 
-filt =
-  Nx.Defn.jit_apply(&FiltersVec2.median/2, params, opts)
-  |> Nx.as_type({:u, 8})
-```
-
-```elixir
-Kino.Image.new(filt)
+(&NxSignal.Filters.median/2)
+|> Nx.Defn.jit_apply(params, opts)
+|> Nx.as_type(:u8)
+|> Kino.Image.new()
 ```
