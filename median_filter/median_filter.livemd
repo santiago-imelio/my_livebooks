@@ -1,3 +1,5 @@
+<!-- livebook:{"app_settings":{"access_type":"public","auto_shutdown_ms":5000,"output_type":"rich","show_source":true,"slug":"median-filter"}} -->
+
 # Median Filter
 
 ```elixir
@@ -33,10 +35,7 @@ img_tensor =
   |> Kino.Input.file_path()
   |> File.read!()
   |> Nx.from_binary({:u, 8})
-```
-
-```elixir
-img_tensor = Nx.reshape(img_tensor, {height, width, 3})
+  |> Nx.reshape({height, width, 3})
 ```
 
 ```elixir
@@ -121,6 +120,8 @@ Even though our implementation works fine for this image, we can increase perfor
 
 ## Optimization using while construct
 
+Let's refactor the implementation of the median filter using Nx numerical definitions with the `defn` macro. Using `defn` only allows functions and macros defined in `Nx.Defn.Kernel`.
+
 ```elixir
 defmodule FiltersDefn do
   import Nx.Defn
@@ -158,11 +159,21 @@ defmodule FiltersDefn do
 end
 ```
 
-```elixir
-params = [img, [kernel_shape: {3, 3}]]
-opts = [compiler: EXLA]
+By default, Nx uses the compiler `Nx.Defn.Evaluator`, which is written in pure Elixir, to compile and run numerical functions. However, rather than giving a performance boost, it is slower than the initial implementation. This is because the JIT compilation of the computation graph is happening in Elixir.
 
-filt = Nx.Defn.jit_apply(&FiltersDefn.median/2, params, opts)
+```elixir
+args = [img, [kernel_shape: {3, 3}]]
+filt = Nx.Defn.jit_apply(&FiltersDefn.median/2, args)
+```
+
+```elixir
+Image.show(filt)
+```
+
+By using EXLA, Elixir will dispatch the JIT compilation to the XLA compiler, which is highly optimized to run tensor operations.
+
+```elixir
+filt = Nx.Defn.jit_apply(&FiltersDefn.median/2, args, compiler: EXLA)
 ```
 
 ```elixir
@@ -170,6 +181,8 @@ Image.show(filt)
 ```
 
 ## Refactor using vectorization
+
+Taking the defn code optimization a step further, we can refactor the function to use vectorization. Since `Nx.slice/3` supports vectorized indices, we can create a vectorized tensor of indices, compute the image slices on each pair of indices $(i,j)$, and finally compute the median of each of those slices.
 
 ```elixir
 defmodule FiltersVec do
@@ -195,10 +208,8 @@ end
 ```
 
 ```elixir
-params = [img, [kernel_shape: {3, 3}]]
-opts = [compiler: EXLA]
-
-filt = Nx.Defn.jit_apply(&FiltersVec.median/2, params, opts)
+args = [img, [kernel_shape: {3, 3}]]
+filt = EXLA.jit_apply(&FiltersVec.median/2, args)
 ```
 
 ```elixir
@@ -207,7 +218,7 @@ Image.show(filt)
 
 ## Performance comparisson
 
-As we will see from the benchmarks, the vectorized version is by far the faster one.
+As we will see from the benchmarks, the vectorized version compiled with EXLA is by far the faster one.
 
 ```elixir
 opts = [kernel_shape: {3, 3}]
@@ -215,54 +226,131 @@ opts = [kernel_shape: {3, 3}]
 benchmarks =
   Benchee.run(%{
     "median no defn" => fn -> Filters.median(img, kernel_size: 3) end,
-    "median defn-while" => fn -> EXLA.jit_apply(&FiltersDefn.median/2, [img, opts]) end,
-    "median vectorized" => fn -> EXLA.jit_apply(&FiltersVec.median/2, [img, opts]) end
+    "median defn-while (EXLA)" => fn -> EXLA.jit_apply(&FiltersDefn.median/2, [img, opts]) end,
+    "median vectorized (EXLA)" => fn -> EXLA.jit_apply(&FiltersVec.median/2, [img, opts]) end
   })
-```
 
-<!-- livebook:{"branch_parent_index":2} -->
+:ok
+```
 
 ## Extending to n-dim
 
-```elixir
-image_input = Kino.Input.image("Upload an image with salt and pepper noise")
-```
+`NxSignal` is a library that provides digital signal processing utilities. It's built on top of `Nx`, meaning we can use compilers and backends for faster computations.
+
+A consequence of the work done in this notebook was the [addition of the median filter into NxSignal](https://github.com/elixir-nx/nx_signal/blob/main/lib/nx_signal/filters.ex), with support for n-dimensional tensors.
 
 ```elixir
-%{file_ref: file_ref, height: height, width: width} = Kino.Input.read(image_input)
-
-img_tensor =
-  file_ref
-  |> Kino.Input.file_path()
-  |> File.read!()
-  |> Nx.from_binary({:u, 8})
-  |> Nx.reshape({height, width, 3})
-
-img_tensor_gray = Image.to_grayscale(img_tensor)
-
 Kino.Image.new(img_tensor)
 ```
 
-`NxSignal` is a library that provides digital signal processing utilities. It's built on top of `Nx`, meaning we can use compilers and backends for faster computations.
-
-A consequence of the work done in this notebook was the [addition of the median filter into NxSignal](https://github.com/elixir-nx/nx_signal/pull/21), with support for n-dimensional tensors.
-
 ```elixir
-params = [img_tensor_gray, [kernel_shape: {3, 3}]]
-opts = [compiler: EXLA]
-
-(&NxSignal.Filters.median/2)
-|> Nx.Defn.jit_apply(params, opts)
-|> Nx.as_type(:u8)
-|> Image.show()
+img_reconstructed = 
+  (&NxSignal.Filters.median/2)
+  |> EXLA.jit_apply([img_tensor, [kernel_shape: {5, 5, 1}]])
+  |> Nx.as_type(:u8)
+  
+Kino.Image.new(img_reconstructed)
 ```
 
-```elixir
-params = [img_tensor, [kernel_shape: {5, 5, 1}]]
-opts = [compiler: EXLA]
+## Extra
 
-(&NxSignal.Filters.median/2)
-|> Nx.Defn.jit_apply(params, opts)
+```elixir
+img_reconstructed_2d = Image.to_grayscale(img_reconstructed)
+
+Image.show(img_reconstructed_2d)
+```
+
+## Other filters
+
+```elixir
+defmodule MoreFilters do
+  import Nx.Defn
+  
+  defn mean(t, opts) do
+    {k0, k1, k2} = opts[:kernel_shape]
+    
+    idx =
+      [Nx.iota(t.shape, axis: 0), Nx.iota(t.shape, axis: 1),
+        Nx.iota(t.shape, axis: 2)]
+      |> Nx.stack(axis: -1)
+      |> Nx.reshape({:auto, 3})
+      |> Nx.vectorize(:elements)
+
+    t
+    |> Nx.slice([idx[0], idx[1], idx[2]], [k0, k1, k2])
+    |> Nx.mean()
+    |> Nx.devectorize(keep_names: false)
+    |> Nx.reshape(t.shape)
+    |> Nx.as_type({:f, 32})
+  end
+
+  def sobel(t) do
+    gx = Nx.tensor([[1.0, 0.0, -1.0], [2.0, 0.0, -2.0], [1.0, 0.0, -1.0]])
+    gy = Nx.tensor([[1.0, 2.0, 1.0], [0.0, 0.0, 0.0], [-1.0, -2.0, -1.0]])
+
+    sobel_n(t, gx, gy)
+  end
+
+  defn sobel_n(t, tx, ty) do
+    {height, width} = Nx.shape(t)
+
+    output = Nx.broadcast(0.0, Nx.shape(t))
+
+    {result, _} =
+      while {output, {i = 0, t, height, width, tx, ty}}, i < height do
+        row = Nx.broadcast(0.0, {elem(Nx.shape(t), 1)})
+
+        {ith_row, _} =
+          while {row, {j = 0, t, i, width, tx, ty}}, j < width do
+            slice = Nx.slice(t, [i, j], [3, 3])
+            gx = Nx.sum(Nx.multiply(tx, slice))
+            gy = Nx.sum(Nx.multiply(ty, slice)) 
+            sobel = 
+              ((gx * gx) + (gy * gy))
+              |> Nx.sqrt()
+              |> Nx.broadcast({1})
+            
+            {Nx.put_slice(row, [j], sobel), {j + 1, t, i, width, tx, ty}}
+          end
+
+        {Nx.put_slice(output, [i, 0], Nx.stack(ith_row, axis: 0)),
+         {i + 1, t, height, width, tx, ty}}
+      end
+
+    result |> Nx.as_type({:u, 8})
+  end
+end
+```
+
+<!-- livebook:{"branch_parent_index":9} -->
+
+## Mean Filter - Blur effect
+
+```elixir
+(&MoreFilters.mean/2)
+|> EXLA.jit_apply([img_reconstructed, [kernel_shape: {9, 9, 1}]])
 |> Nx.as_type(:u8)
 |> Kino.Image.new()
+```
+
+<!-- livebook:{"branch_parent_index":9} -->
+
+## Invert colors
+
+```elixir
+img_reconstructed
+|> Nx.subtract(Nx.broadcast(255, img_reconstructed.shape))
+|> Nx.abs()
+|> Nx.as_type(:u8)
+|> Kino.Image.new()
+```
+
+<!-- livebook:{"branch_parent_index":9} -->
+
+## Sobel Filter - Edge detection
+
+```elixir
+(&MoreFilters.sobel/1)
+|> EXLA.jit_apply([img_reconstructed_2d])
+|> Image.show()
 ```
