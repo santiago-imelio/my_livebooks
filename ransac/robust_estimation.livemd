@@ -1,0 +1,259 @@
+# Robust Estimation
+
+```elixir
+Mix.install([
+  {:nx, "~> 0.9.2"},
+  {:exla, "~> 0.9.2"},
+  {:scholar, "~> 0.4.0"},
+  {:tucan, "~> 0.5.0"},
+  {:kino_vega_lite, "~> 0.1.13"}
+])
+```
+
+## Section
+
+```elixir
+Nx.global_default_backend(EXLA.Backend)
+Nx.Defn.global_default_options(compiler: EXLA)
+```
+
+```elixir
+alias Scholar.Linear.LinearRegression
+alias Scholar.Metrics.Regression, as: Metrics
+```
+
+```elixir
+defmodule RANSAC do
+  import Nx.Defn
+
+  defstruct [
+    :estimator,
+    :inliers_indices,
+    :n_inliers
+  ]
+
+  def fit(x, y, opts) do
+    inliers_mask = fit_n(x, y, opts)
+    n_inliers = Nx.to_number(Nx.sum(inliers_mask))
+    
+    if n_inliers == 0 do
+      raise "RANSAC was not able to find consensus set that meets the required criteria."
+    end
+
+    inliers_idx = Nx.argsort(inliers_mask, direction: :desc)[0..(n_inliers - 1)]
+
+    x_inliers = Nx.take(x, inliers_idx)
+    y_inliers = Nx.take(y, inliers_idx)
+
+    estimator = LinearRegression.fit(x_inliers, y_inliers)
+
+    %__MODULE__{estimator: estimator, inliers_indices: inliers_idx, 
+                n_inliers: n_inliers}
+  end
+
+  def predict(%__MODULE__{estimator: model}, x) do
+    LinearRegression.predict(model, x)
+  end
+  
+  defn fit_n(x, y, opts) do
+    max_iters = opts[:max_iters]
+    min_samples = opts[:min_samples]
+    min_samples_t = Nx.broadcast(0, {min_samples})
+    threshold = opts[:threshold]
+    rand_key = Nx.Random.key(opts[:random_seed])
+    data = Nx.concatenate([x, y], axis: 1)
+    inliers = Nx.broadcast(0, {max_iters, elem(x.shape, 0)})
+
+    {inliers_masks, _} =
+      while {inliers, {i = 0, x, y, rand_key, data, min_samples_t, threshold}}, i < max_iters do
+        # sample random points
+        n_samples = elem(min_samples_t.shape, 0)
+
+        {rand_samples, rand_key} = Nx.Random.choice(rand_key, data, 
+                                                    axis: 0, samples: n_samples)
+        
+        {rand_x, rand_y} = Nx.split(rand_samples, elem(x.shape, 1), axis: 1)
+        
+        # evaluate samples using the given estimator
+        model = LinearRegression.fit(rand_x, rand_y)
+        y_pred = LinearRegression.predict(model, x)
+        error = Nx.abs(Nx.reshape(y, y_pred.shape) - y_pred)
+  
+        # filter inliers and update context
+        inliers_i = Nx.less(error, threshold)
+        updated_inliers = Nx.put_slice(inliers, [i, 0], 
+                                       Nx.reshape(inliers_i, {1, elem(x.shape, 0)}))
+
+        {updated_inliers,
+          {i + 1, x, y, rand_key, data, min_samples_t, threshold}}
+      end
+
+    # return best inliers mask
+    best_mask_idx =
+      inliers_masks
+      |> Nx.vectorize(:masks)
+      |> Nx.sum()
+      |> Nx.devectorize(keep_names: false)
+      |> Nx.argmax()
+
+    inliers_masks[best_mask_idx]
+  end
+end
+```
+
+```elixir
+data = Nx.tensor([
+  [1.2000000000000002,39344.0],
+  [1.4000000000000001,46206.0],
+  [1.6,37732.0],
+  [2.1,43526.0],
+  [2.3000000000000003,39892.0],
+  [3.0,56643.0],
+  [3.1,60151.0],
+  [3.3000000000000003,54446.0],
+  [3.3000000000000003,64446.0],
+  [3.8000000000000003,57190.0],
+  [4.0,63219.0],
+  [4.1,55795.0],
+  [4.1,56958.0],
+  [4.199999999999999,57082.0],
+  [4.6,61112.0],
+  [5.0,67939.0],
+  [5.199999999999999,66030.0],
+  [5.3999999999999995,83089.0],
+  [6.0,81364.0],
+  [6.1,93941.0],
+  [6.8999999999999995,91739.0],
+  [7.199999999999999,98274.0],
+  [8.0,101303.0],
+  [8.299999999999999,113813.0],
+  [8.799999999999999,109432.0],
+  [9.1,105583.0],
+  [9.6,116970.0],
+  [9.7,112636.0],
+  [10.4,122392.0],
+  [10.6,121873.0],
+
+  # Outliers
+  [9.0, 150000.0],
+  [9.0, 20000.0],
+  [8.5, 19000.0],
+  [12.3, 21000.0],
+  [2.0, 90000.0],
+  [1.83, 89000.0],
+  [10.0, 148000.0],
+  [0.5, 180000.0],
+  [11.0, 170000.0],
+  [2.5, 25000.0],
+  [5.5, 200000.0],
+  [6.5, 30000.0],
+  [3.7, 160000.0],
+  [4.3, 2500.0],
+  [0.3, 4000.0],
+  [9.2, 220000.0],
+  [8.1, 9000.0],
+  [7.0, 1800.0],
+  [10.9, 250000.0],
+  [6.8, 2600.0],
+  [3.9, 190000.0],
+  [1.1, 165000.0],
+  [12.0, 4000.0],
+  [2.9, 215000.0],
+  [4.7, 1200.0],
+  [5.9, 190.0],
+  [0.7, 50000.0]
+])
+
+
+{x, y} = Nx.split(data, 1, axis: 1)
+```
+
+```elixir
+plt_data = [
+  x: Nx.to_list(Nx.squeeze(x)),
+  y: Nx.to_list(Nx.squeeze(y))
+]
+
+scatter = Tucan.scatter(plt_data, "x", "y", 
+              width: 500, height: 500, point_color: "red", point_size: 50)
+```
+
+```elixir
+bad_model = LinearRegression.fit(x, y)
+```
+
+```elixir
+LinearRegression.predict(bad_model, Nx.tensor([[13], [21]]))
+```
+
+```elixir
+x0 = 0.0
+x1 = 13
+y0 = Nx.to_number(bad_model.intercept)
+y1 = Nx.to_number(LinearRegression.predict(bad_model, Nx.tensor([x1])))
+
+bad_model_plt_data = [
+  x: [x0, x1],
+  y: [y0, y1]
+]
+
+Tucan.layers([
+  scatter,
+  Tucan.lineplot(bad_model_plt_data, "x", "y"),
+])
+```
+
+```elixir
+plot_ransac = fn ransac ->
+  x0 = 0.0
+  x1 = 13
+  y0 = Nx.to_number(ransac.estimator.intercept)
+  y1 = Nx.to_number(RANSAC.predict(ransac, Nx.tensor([x1])))
+  
+  ransac_plt_data = [
+    x: [x0, x1],
+    y: [y0, y1]
+  ]
+  
+  Tucan.layers([
+    scatter,
+    Tucan.lineplot(ransac_plt_data, "x", "y"),
+  ])  
+end
+```
+
+```elixir
+ransac1 = RANSAC.fit(
+  x, 
+  y,
+  max_iters: 100, 
+  min_samples: 2,
+  random_seed: 42,
+  threshold: 20000
+)
+plot_ransac.(ransac1)
+```
+
+```elixir
+ransac2 = RANSAC.fit(
+  x, 
+  y,
+  max_iters: 500, 
+  min_samples: 2,
+  random_seed: 42,
+  threshold: 10000
+)
+plot_ransac.(ransac2)
+```
+
+```elixir
+ransac3 = RANSAC.fit(
+  x, 
+  y,
+  max_iters: 100,
+  min_samples: 2,
+  random_seed: 42,
+  threshold: 500
+)
+plot_ransac.(ransac3)
+```
